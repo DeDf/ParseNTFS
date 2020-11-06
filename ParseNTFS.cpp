@@ -2,11 +2,9 @@
 #include "ParseNtfs.h"
 
 BOOL
-FixMultiSector(__inout PMULTI_SECTOR_HEADER pMultiSector,
-              __in DWORD WordsPerSector)
+FixMultiSector(__inout PMULTI_SECTOR_HEADER pMultiSector, __in DWORD WordsPerSector)
 {
-    PUSHORT USA = (PUSHORT)(PUCHAR(pMultiSector) +
-        pMultiSector->UpdateSequenceArrayOffset);
+    PUSHORT USA = (PUSHORT)(PUCHAR(pMultiSector) + pMultiSector->UpdateSequenceArrayOffset);
     ULONG UsaCount = pMultiSector->UpdateSequenceArraySize;
     PUSHORT Sector = (PUSHORT)pMultiSector;
 
@@ -293,7 +291,7 @@ void AnalyseAttribute(PATTRIBUTE_RECORD_HEADER pAttribute, HANDLE FileHandle)
                 ULONG t = 0;
                 subtractor = 0;
 
-                while(tOffsetLen)
+                while (tOffsetLen)
                 {
                     UCHAR c = *(p+2+tOffsetLen-1);
 
@@ -340,7 +338,7 @@ void AnalyseAttribute(PATTRIBUTE_RECORD_HEADER pAttribute, HANDLE FileHandle)
 
 void AnalysePartition()
 {
-    HANDLE FileHandle = CreateFileW(
+    HANDLE hFileVolume = CreateFileW(
         L"\\\\.\\C:",
         GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -350,28 +348,28 @@ void AnalysePartition()
         0);
 
     UCHAR buf[0x400];
-    ULONG ulReturn;
-    ReadFile(FileHandle,buf,0x200,&ulReturn,NULL);
+    ULONG LenReaded;
+    ReadFile(hFileVolume,buf,0x200,&LenReaded,NULL);
 
     PPACKED_BOOT_SECTOR pBootSector = (PPACKED_BOOT_SECTOR)buf;
 
-	LARGE_INTEGER ulStartSector;
+	LARGE_INTEGER liStartSector;
 
-	ulStartSector.QuadPart =
+	liStartSector.QuadPart =
         pBootSector->MftStartLcn * pBootSector->PackedBpb.SectorsPerCluster;
 
-    LARGE_INTEGER lpNewFilePointer;
-    lpNewFilePointer.QuadPart = ulStartSector.QuadPart*0x200;  // 定位到MFT的起始地址
+    LARGE_INTEGER liNewFilePointer;
+    liNewFilePointer.QuadPart = liStartSector.QuadPart*0x200;  // 定位到MFT的起始地址
     LARGE_INTEGER MFTStart;
-    MFTStart.QuadPart = lpNewFilePointer.QuadPart;
+    MFTStart.QuadPart = liNewFilePointer.QuadPart;
     printf("MFTStart : 0x%I64x\n", MFTStart.QuadPart);
 
-    for (int i = 0; i < 16; i++, lpNewFilePointer.QuadPart += 0x400)  // 一个MFT记录是1024(0x400)字节
+    for (int i = 0; i < 16; i++, liNewFilePointer.QuadPart += 0x400)  // 一个MFT记录是1024(0x400)字节
     {
         printf("FRS %d\n", i);  // file record segment
 
-        SetFilePointerEx(FileHandle,lpNewFilePointer,NULL,FILE_BEGIN);
-        ReadFile(FileHandle,buf,0x400,&ulReturn,NULL);
+        SetFilePointerEx(hFileVolume,liNewFilePointer,NULL,FILE_BEGIN);
+        ReadFile(hFileVolume,buf,0x400,&LenReaded,NULL);
 
         PFILE_RECORD_SEGMENT_HEADER pFileRecord = (PFILE_RECORD_SEGMENT_HEADER)buf;
 
@@ -388,7 +386,7 @@ void AnalysePartition()
             pAttribute->TypeCode != $END;
             pAttribute = (PATTRIBUTE_RECORD_HEADER) ((ULONG)pAttribute + pAttribute->RecordLength))
         {
-            AnalyseAttribute(pAttribute, FileHandle);
+            AnalyseAttribute(pAttribute, hFileVolume);
         } 
     }
 
@@ -399,10 +397,10 @@ void AnalysePartition()
     printf ("============================================\n");
     FileMFTNumber = 4961;
     printf ("FRS %d\n", FileMFTNumber);
-    lpNewFilePointer.QuadPart = MFTStart.QuadPart + FileMFTNumber * 0x400;
+    liNewFilePointer.QuadPart = MFTStart.QuadPart + FileMFTNumber * 0x400;
     
-    SetFilePointerEx(FileHandle,lpNewFilePointer,NULL,FILE_BEGIN);
-    ReadFile(FileHandle,buf,0x400,&ulReturn,NULL);
+    SetFilePointerEx(hFileVolume,liNewFilePointer,NULL,FILE_BEGIN);
+    ReadFile(hFileVolume,buf,0x400,&LenReaded,NULL);
     
     if (*(ULONG*)pFileRecord != 'ELIF')
     {
@@ -415,33 +413,11 @@ void AnalysePartition()
         pAttribute->TypeCode != $END;
         pAttribute = (PATTRIBUTE_RECORD_HEADER) ((ULONG)pAttribute + pAttribute->RecordLength))
     {
-        AnalyseAttribute(pAttribute, FileHandle);
-    }
-
-    printf ("============================================\n");
-    FileMFTNumber = 29862;
-    printf ("FRS %d\n", FileMFTNumber);
-    lpNewFilePointer.QuadPart = MFTStart.QuadPart + FileMFTNumber * 0x400;
-
-    SetFilePointerEx(FileHandle,lpNewFilePointer,NULL,FILE_BEGIN);
-    ReadFile(FileHandle,buf,0x400,&ulReturn,NULL);
-
-    if (*(ULONG*)pFileRecord != 'ELIF')
-    {
-        printf("invalid file record!\n");
-        goto Exit;
-    }
-    FixMultiSector((PMULTI_SECTOR_HEADER)pFileRecord, 256);
-
-    for(pAttribute = (PATTRIBUTE_RECORD_HEADER) ((ULONG)pFileRecord + pFileRecord->FirstAttributeOffset);
-        pAttribute->TypeCode != $END;
-        pAttribute = (PATTRIBUTE_RECORD_HEADER) ((ULONG)pAttribute + pAttribute->RecordLength))
-    {
-        AnalyseAttribute(pAttribute, FileHandle);
+        AnalyseAttribute(pAttribute, hFileVolume);
     }
 
 Exit:
-    if (FileHandle)
-        CloseHandle(FileHandle);
+    if (hFileVolume)
+        CloseHandle(hFileVolume);
 }
 
