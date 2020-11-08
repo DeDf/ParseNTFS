@@ -4,29 +4,34 @@
 BOOL
 FixMultiSector(__inout PMULTI_SECTOR_HEADER pMultiSector, __in DWORD WordsPerSector)
 {
+    // UpdateSequenceArray
     PUSHORT USA = (PUSHORT)(PUCHAR(pMultiSector) + pMultiSector->UpdateSequenceArrayOffset);
-    ULONG UsaCount = pMultiSector->UpdateSequenceArraySize;
-    PUSHORT Sector = (PUSHORT)pMultiSector;
+    USHORT UsaSize = pMultiSector->UpdateSequenceArraySize;
+    PUSHORT pSector = (PUSHORT)pMultiSector;
 
-    printf("UsaCount = %d\n", UsaCount);
+    printf("UsaSize = %d\n", UsaSize);
+//     if (UsaSize > 16)
+//     {
+//         printf("UsaSize > 16!\n");
+//         UsaSize = 16;
+//     }
 
-    for (ULONG Index = 1; Index < UsaCount; ++Index)
+    for (ULONG i = 1; i < UsaSize; ++i)
     {
-        if (Sector[WordsPerSector - 1] == USA[0])
+        if (pSector[WordsPerSector - 1] == USA[0])  // USA[0] : SequenceNumber
         {
-            Sector[WordsPerSector - 1] = USA[Index];
-            Sector += WordsPerSector;
+            pSector[WordsPerSector - 1] = USA[i];
+            pSector += WordsPerSector;
         }
         else
         {
-            printf("USA error at 0x%p\n", Sector + WordsPerSector - 1);
+            printf("USA error at offset [%d]\n", pSector - (PUSHORT)pMultiSector);
             return FALSE;
         }
     }
 
     return TRUE;
 }
-
 
 void Parse$DATA(ULONG Cluster, HANDLE FileHandle)
 {
@@ -65,14 +70,15 @@ void ParseA0(ULONG Cluster, HANDLE FileHandle)
     UCHAR buf[0x1000];
     PINDEX_ALLOCATION_BUFFER p = (PINDEX_ALLOCATION_BUFFER)buf;
     PINDEX_ENTRY pIndexEntry;
-    ULONG ulReturn;
+    ULONG LenReaded;
     //
     LARGE_INTEGER lpNewFilePointer;
-    lpNewFilePointer.QuadPart = Cluster*8*0x200;
+    lpNewFilePointer.QuadPart = Cluster;
+    lpNewFilePointer.QuadPart <<= 12; // *8*200;
 
-    printf("     ParseA0 Cluster : 0x%x\n", Cluster);
+    printf("   ParseA0 Cluster : 0x%x\n", Cluster);
     SetFilePointerEx(FileHandle,lpNewFilePointer,NULL,FILE_BEGIN);
-    ReadFile(FileHandle,p,sizeof(buf),&ulReturn,NULL);
+    ReadFile(FileHandle,p,sizeof(buf),&LenReaded,NULL);
 
     FixMultiSector((PMULTI_SECTOR_HEADER)p, 256);
 
@@ -94,14 +100,12 @@ void ParseA0(ULONG Cluster, HANDLE FileHandle)
 
                 FRSNumber |= pIndexEntry->FileReference.SegmentNumberHighPart << 32;
                 FRSNumber |= pIndexEntry->FileReference.SegmentNumberLowPart;
-                printf( "        File Name: %-32ws %10I64d\n", FileName, FRSNumber);
+                printf( "FRS [%10I64d] FileName: %-32ws\n", FRSNumber, FileName );
             }
         }
 
         pIndexEntry = (PINDEX_ENTRY)((ULONG)pIndexEntry + pIndexEntry->Length );
     }
-
-    ulReturn = 0;  // for Debug BreakPoint
 }
 
 void AnalyseAttribute(PATTRIBUTE_RECORD_HEADER pAttribute, HANDLE FileHandle)
@@ -277,51 +281,51 @@ void AnalyseAttribute(PATTRIBUTE_RECORD_HEADER pAttribute, HANDLE FileHandle)
         printf(" AttrType: $INDEX_ALLOCATION\n");
         if (pAttribute->FormCode == NONRESIDENT_FORM)
         {
-            PUCHAR p = (PUCHAR)pAttribute + pAttribute->Form.Nonresident.MappingPairsOffset;
-
-            ULONG subtractor;  // 如果头一个字节首bit为1，说明是负数的补码，需要减去这个
-            
-            ULONG Cluster = 0;
-
-            while (*p & 0xF0)
+            PUCHAR p = (PUCHAR)pAttribute + pAttribute->Form.Nonresident.MappingPairsOffset;  // DataRunlist
+            ULONG LCN = 0;
+            //
+            while (*p)
             {
-                UCHAR nOffsetLen  = (*p & 0xF0)>>4;
-                UCHAR tOffsetLen  = nOffsetLen;
-                UCHAR nClusterSum = *(p+1);
-                ULONG t = 0;
-                subtractor = 0;
+                ULONG LCN_Offset  = 0;
+                ULONG nClusterSum = 0;
+                //
+                UCHAR StartLCNLen   = (*p & 0xF0)>>4;
+                UCHAR ClusterSumLen = (*p & 0x0F);
+                UCHAR s = StartLCNLen;
+                UCHAR l = ClusterSumLen;
 
-                while (tOffsetLen)
+                p++;
+
+                while (l--)
                 {
-                    UCHAR c = *(p+2+tOffsetLen-1);
+                    nClusterSum <<= 8;
+                    nClusterSum |= p[l];
+                }
+                p += ClusterSumLen;
 
-                    t |= c;
+                UCHAR bSub = 0;
+                if (p[s] & 0xC0)
+                    bSub = 1;
 
-                    if (tOffsetLen == nOffsetLen)
-                    {
-                        if (c & 0x80)
-                            subtractor = 1 << (nOffsetLen*8);
-                    }
+                while (s--)
+                {
+                    LCN_Offset <<= 8;
+                    LCN_Offset |= p[s];
+                }
+                p += StartLCNLen;
 
-                    if (--tOffsetLen)
-                        t <<= 8;
+                if (!LCN)
+                    LCN = LCN_Offset;
+                else
+                {
+                    if (!bSub)
+                        LCN += LCN_Offset;
+                    else
+                        LCN -= LCN_Offset;
                 }
 
-                printf("       ClusterOffset : 0x%x, nClusterSum : %d", t, nClusterSum);  // 这里单位是簇
-
-                if (subtractor)
-                    printf("  subtractor : 0x%x\n", subtractor);
-                else
-                    printf("\n");
-
-                if (Cluster)
-                    Cluster = Cluster + t - subtractor;
-                else
-                    Cluster = t;
-
-                ParseA0(Cluster, FileHandle);
-
-                p += nOffsetLen+2;
+                printf("   LCN_Offset : 0x%x, LCN : 0x%x, nClusterSum : %d\n", LCN_Offset, LCN, nClusterSum);
+                ParseA0(LCN, FileHandle);
             }
         }
         break;
@@ -353,13 +357,14 @@ void AnalysePartition()
 
     PPACKED_BOOT_SECTOR pBootSector = (PPACKED_BOOT_SECTOR)buf;
 
-	LARGE_INTEGER liStartSector;
+	LARGE_INTEGER liMftStartSector;
 
-	liStartSector.QuadPart =
+	liMftStartSector.QuadPart =
         pBootSector->MftStartLcn * pBootSector->PackedBpb.SectorsPerCluster;
 
     LARGE_INTEGER liNewFilePointer;
-    liNewFilePointer.QuadPart = liStartSector.QuadPart*0x200;  // 定位到MFT的起始地址
+    liNewFilePointer.QuadPart = liMftStartSector.QuadPart*0x200;  // 定位到MFT的起始地址
+    //
     LARGE_INTEGER MFTStart;
     MFTStart.QuadPart = liNewFilePointer.QuadPart;
     printf("MFTStart : 0x%I64x\n", MFTStart.QuadPart);
@@ -372,7 +377,6 @@ void AnalysePartition()
         ReadFile(hFileVolume,buf,0x400,&LenReaded,NULL);
 
         PFILE_RECORD_SEGMENT_HEADER pFileRecord = (PFILE_RECORD_SEGMENT_HEADER)buf;
-
         if (*(ULONG*)pFileRecord != 'ELIF')
         {
             printf("invalid file record!\n");
@@ -381,7 +385,7 @@ void AnalysePartition()
         FixMultiSector((PMULTI_SECTOR_HEADER)pFileRecord, 256);
 
         PATTRIBUTE_RECORD_HEADER pAttribute;
-
+        //
         for(pAttribute = (PATTRIBUTE_RECORD_HEADER) ((ULONG)pFileRecord + pFileRecord->FirstAttributeOffset);
             pAttribute->TypeCode != $END;
             pAttribute = (PATTRIBUTE_RECORD_HEADER) ((ULONG)pAttribute + pAttribute->RecordLength))
@@ -390,18 +394,15 @@ void AnalysePartition()
         } 
     }
 
-    PFILE_RECORD_SEGMENT_HEADER pFileRecord = (PFILE_RECORD_SEGMENT_HEADER)buf;
-    PATTRIBUTE_RECORD_HEADER pAttribute;
-    ULONG FileMFTNumber;
-
     printf ("============================================\n");
-    FileMFTNumber = 4961;
+    ULONG FileMFTNumber = 4961;
     printf ("FRS %d\n", FileMFTNumber);
     liNewFilePointer.QuadPart = MFTStart.QuadPart + FileMFTNumber * 0x400;
     
     SetFilePointerEx(hFileVolume,liNewFilePointer,NULL,FILE_BEGIN);
     ReadFile(hFileVolume,buf,0x400,&LenReaded,NULL);
-    
+
+    PFILE_RECORD_SEGMENT_HEADER pFileRecord = (PFILE_RECORD_SEGMENT_HEADER)buf;
     if (*(ULONG*)pFileRecord != 'ELIF')
     {
         printf("invalid file record!\n");
@@ -409,6 +410,7 @@ void AnalysePartition()
     }
     FixMultiSector((PMULTI_SECTOR_HEADER)pFileRecord, 256);
 
+    PATTRIBUTE_RECORD_HEADER pAttribute;
     for(pAttribute = (PATTRIBUTE_RECORD_HEADER) ((ULONG)pFileRecord + pFileRecord->FirstAttributeOffset);
         pAttribute->TypeCode != $END;
         pAttribute = (PATTRIBUTE_RECORD_HEADER) ((ULONG)pAttribute + pAttribute->RecordLength))
